@@ -5,6 +5,5 @@ plotly>=5.15.0
 reportlab>=4.0.4
 python-dateutil>=2.8.2
 email-validator>=2.0.0.post2
-smtplib3==1.0.1
 supabase>=1.0.3
 requests>=2.31.0
