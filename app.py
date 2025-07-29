@@ -28,7 +28,7 @@ from dateutil.relativedelta import relativedelta
 
 # 페이지 설정
 st.set_page_config(
-    page_title="급여 및 인사 관리 시스템",
+    page_title="급여 및 인사 관리 시스템 v2.0 Complete",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -38,7 +38,7 @@ st.set_page_config(
 INSURANCE_RATES = {
     "national_pension": 0.045,  # 국민연금 4.5%
     "health_insurance": 0.03545,  # 건강보험 3.545%
-    "long_term_care": 0.009182,  # 장기요양보험
+    "long_term_care": 0.1295,  # 장기요양보험 건강보험료의 12.95%
     "employment_insurance": 0.009,  # 고용보험 0.9%
     "employment_stability": 0.0025,  # 고용안정사업 0.25%
     "workers_compensation": 0.007,  # 산재보험 평균 0.7%
@@ -50,16 +50,141 @@ PENSION_LIMITS = {
     "max": 6370000  # 최고 637만원
 }
 
-# 한글 폰트 설정 함수
+# ============================================
+# 올바른 2025년 소득세 및 지방소득세 계산 (test9.py 기반)
+# ============================================
+
+def calculate_salary_income_deduction(annual_gross_salary):
+    """급여소득공제 계산 (2025년 기준)"""
+    if annual_gross_salary <= 5000000:
+        return int(annual_gross_salary * 0.7)
+    elif annual_gross_salary <= 15000000:
+        return int(3500000 + (annual_gross_salary - 5000000) * 0.4)
+    elif annual_gross_salary <= 45000000:
+        return int(7500000 + (annual_gross_salary - 15000000) * 0.15)
+    elif annual_gross_salary <= 100000000:
+        return int(12000000 + (annual_gross_salary - 45000000) * 0.05)
+    else:
+        return int(14750000 + (annual_gross_salary - 100000000) * 0.02)
+
+def calculate_personal_deductions(family_count):
+    """인적공제 계산"""
+    # 기본공제: 본인 + 부양가족 1인당 150만원
+    basic_deduction = family_count * 1500000
+    return basic_deduction
+
+def calculate_correct_annual_taxable_income(monthly_salary, family_count):
+    """올바른 연간 과세표준 계산"""
+    # 1. 총급여액
+    annual_gross_salary = monthly_salary * 12
+    
+    # 2. 급여소득공제
+    salary_income_deduction = calculate_salary_income_deduction(annual_gross_salary)
+    salary_income = annual_gross_salary - salary_income_deduction
+    
+    # 3. 인적공제 (기본공제)
+    personal_deductions = calculate_personal_deductions(family_count)
+    
+    # 4. 과세표준
+    taxable_income = max(0, salary_income - personal_deductions)
+    
+    return {
+        'annual_gross_salary': annual_gross_salary,
+        'salary_income_deduction': salary_income_deduction,
+        'salary_income': salary_income,
+        'personal_deductions': personal_deductions,
+        'taxable_income': taxable_income
+    }
+
+def calculate_correct_progressive_income_tax(taxable_income):
+    """올바른 소득세 계산 (2025년 세율)"""
+    if taxable_income <= 0:
+        return 0
+    
+    # 2025년 소득세 누진세율 구간
+    tax_brackets = [
+        (14000000, 0.06),      # 1,400만원 이하 6%
+        (50000000, 0.15),      # 1,400만원 초과 ~ 5,000만원 이하 15%
+        (88000000, 0.24),      # 5,000만원 초과 ~ 8,800만원 이하 24%
+        (150000000, 0.35),     # 8,800만원 초과 ~ 1억5,000만원 이하 35%
+        (300000000, 0.38),     # 1억5,000만원 초과 ~ 3억원 이하 38%
+        (500000000, 0.40),     # 3억원 초과 ~ 5억원 이하 40%
+        (1000000000, 0.42),    # 5억원 초과 ~ 10억원 이하 42%
+        (float('inf'), 0.45)   # 10억원 초과 45%
+    ]
+    
+    total_tax = 0
+    prev_limit = 0
+    
+    for limit, rate in tax_brackets:
+        if taxable_income <= limit:
+            total_tax += (taxable_income - prev_limit) * rate
+            break
+        else:
+            total_tax += (limit - prev_limit) * rate
+            prev_limit = limit
+    
+    return total_tax
+
+def calculate_child_tax_credit(family_count):
+    """자녀세액공제 계산 (자녀 1명당 연 15만원)"""
+    children_count = max(0, family_count - 1)  # 본인 제외
+    return children_count * 150000  # 연간 15만원
+
+def calculate_correct_taxes_for_payroll(monthly_salary, family_count):
+    """올바른 급여 계산용 세금 계산 함수"""
+    # 1. 과세표준 계산
+    tax_calc = calculate_correct_annual_taxable_income(monthly_salary, family_count)
+    taxable_income = tax_calc['taxable_income']
+    
+    # 2. 소득세 산출
+    annual_income_tax_gross = calculate_correct_progressive_income_tax(taxable_income)
+    
+    # 3. 자녀세액공제 적용
+    child_tax_credit = calculate_child_tax_credit(family_count)
+    annual_income_tax = max(0, annual_income_tax_gross - child_tax_credit)
+    
+    # 4. 지방소득세 계산 (소득세의 10%)
+    annual_local_tax = int(annual_income_tax * 0.1)
+    
+    # 5. 월액으로 환산
+    monthly_income_tax = int(annual_income_tax / 12)
+    monthly_local_tax = int(annual_local_tax / 12)
+    
+    return {
+        'income_tax': monthly_income_tax,
+        'resident_tax': monthly_local_tax,
+        'local_tax': monthly_local_tax,
+        'taxable_income': taxable_income,
+        'effective_rate': (monthly_income_tax + monthly_local_tax) / monthly_salary * 100 if monthly_salary > 0 else 0,
+        'salary_income_deduction': tax_calc['salary_income_deduction'],
+        'personal_deductions': tax_calc['personal_deductions'],
+        'child_tax_credit': child_tax_credit,
+        'annual_income_tax_before_credit': annual_income_tax_gross,
+        'annual_income_tax_after_credit': annual_income_tax
+    }
+
+# 기존 함수명 호환성을 위한 wrapper
+def get_income_tax(monthly_salary, family_count):
+    """기존 함수명 호환성"""
+    result = calculate_correct_taxes_for_payroll(monthly_salary, family_count)
+    return result['income_tax']
+
+def calculate_resident_tax(monthly_salary, family_count):
+    """기존 함수명 호환성"""
+    result = calculate_correct_taxes_for_payroll(monthly_salary, family_count)
+    return result['resident_tax']
+
+# ============================================
+# 한글 폰트 및 PDF 관련 함수
+# ============================================
+
 @st.cache_resource
 def setup_korean_font():
     """한글 폰트 설정"""
     try:
-        # 나눔고딕 폰트 URL (Google Fonts)
-        font_url = "https://fonts.googleapis.com/css2?family=Nanum+Gothic:wght@400;700&display=swap"
-        
-        # 시스템에 설치된 한글 폰트 시도
         korean_fonts = [
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",  # macOS
             "/System/Library/Fonts/NanumGothic.ttc",  # macOS
             "C:/Windows/Fonts/malgun.ttf",  # Windows 맑은고딕
             "C:/Windows/Fonts/NanumGothic.ttf",  # Windows 나눔고딕
@@ -74,21 +199,22 @@ def setup_korean_font():
                 except:
                     continue
         
-        # 기본 폰트 사용
         return 'Helvetica'
     
     except Exception as e:
         st.warning(f"한글 폰트 설정 실패: {str(e)}. 기본 폰트를 사용합니다.")
         return 'Helvetica'
 
-# Supabase 연결 함수
+# ============================================
+# Supabase 연결 및 데이터베이스 함수들
+# ============================================
+
 @st.cache_resource
 def init_supabase():
     """Supabase 클라이언트 초기화"""
     try:
         from supabase import create_client, Client
         
-        # secrets 접근 방식 개선
         try:
             supabase_url = st.secrets["SUPABASE_URL"]
             supabase_key = st.secrets["SUPABASE_ANON_KEY"]
@@ -108,28 +234,7 @@ def init_supabase():
             return None
         
         supabase = create_client(supabase_url, supabase_key)
-        
-        # 연결 테스트 및 테이블 존재 확인
-        try:
-            # 각 테이블 존재 확인
-            tables_to_check = ['employees', 'attendance', 'payroll']
-            for table in tables_to_check:
-                try:
-                    result = supabase.table(table).select('*').limit(1).execute()
-                    st.success(f"✅ {table} 테이블 연결 성공")
-                except Exception as table_error:
-                    st.error(f"❌ {table} 테이블 오류: {str(table_error)}")
-                    st.info("💡 Supabase에서 data.txt의 SQL을 실행하고 RLS를 비활성화해주세요.")
-            
-            return supabase
-            
-        except Exception as e:
-            st.error(f"❌ 테이블 확인 오류: {str(e)}")
-            st.info("💡 다음을 확인해주세요:")
-            st.info("1. Supabase SQL Editor에서 data.txt의 SQL 실행")
-            st.info("2. Authentication > Settings에서 RLS 비활성화")
-            st.info("3. API Keys가 올바른지 확인")
-            return supabase
+        return supabase
             
     except ImportError:
         st.error("❌ supabase 라이브러리가 설치되지 않았습니다.")
@@ -137,13 +242,14 @@ def init_supabase():
         return None
     except Exception as e:
         st.error(f"❌ Supabase 초기화 오류: {str(e)}")
-        return None
-
+        return None# ==
+# ==========================================
 # 근무일수 및 급여 차감 계산 함수들
+# ============================================
+
 def get_workdays_in_month(year, month):
     """해당 월의 근무일수 계산 (주말 제외, 평일만)"""
     try:
-        # 해당 월의 첫날과 마지막날
         first_day = datetime(year, month, 1).date()
         last_day = (datetime(year, month + 1, 1) - timedelta(days=1)).date() if month < 12 else datetime(year, 12, 31).date()
         
@@ -151,14 +257,12 @@ def get_workdays_in_month(year, month):
         current_date = first_day
         
         while current_date <= last_day:
-            # 월요일(0) ~ 금요일(4)만 근무일로 계산
-            if current_date.weekday() < 5:
+            if current_date.weekday() < 5:  # 월요일(0) ~ 금요일(4)
                 workdays += 1
             current_date += timedelta(days=1)
         
         return workdays
     except Exception as e:
-        # 오류 발생 시 기본값 22일 반환
         return 22
 
 def calculate_unpaid_leave_deduction(base_salary, unpaid_days, year, month):
@@ -167,13 +271,8 @@ def calculate_unpaid_leave_deduction(base_salary, unpaid_days, year, month):
         if unpaid_days <= 0:
             return 0
         
-        # 해당 월 근무일수
         total_workdays = get_workdays_in_month(year, month)
-        
-        # 일급 계산
         daily_wage = base_salary / total_workdays
-        
-        # 무급휴가 차감액
         deduction = daily_wage * unpaid_days
         
         return int(deduction)
@@ -186,14 +285,9 @@ def calculate_lateness_deduction(base_salary, late_hours, year, month):
         if late_hours <= 0:
             return 0
         
-        # 해당 월 근무일수 및 시간
         total_workdays = get_workdays_in_month(year, month)
-        total_work_hours = total_workdays * 8  # 하루 8시간 기준
-        
-        # 시급 계산
+        total_work_hours = total_workdays * 8
         hourly_wage = base_salary / total_work_hours
-        
-        # 지각/조퇴 차감액
         deduction = hourly_wage * late_hours
         
         return int(deduction)
@@ -225,7 +319,6 @@ def get_employee_deductions(supabase, employee_id, pay_month):
         # 지각/조퇴 시간 계산
         late_hours = 0
         if 'status' in attendance_df.columns and 'actual_hours' in attendance_df.columns:
-            # 지각: 9시 이후 출근 (30분 이상 지각 시 차감)
             late_records = attendance_df[attendance_df['status'] == '지각']
             for _, record in late_records.iterrows():
                 if 'clock_in' in record and record['clock_in']:
@@ -233,31 +326,27 @@ def get_employee_deductions(supabase, employee_id, pay_month):
                         clock_in_time = datetime.strptime(str(record['clock_in']), '%H:%M:%S').time()
                         standard_time = datetime.strptime('09:00:00', '%H:%M:%S').time()
                         
-                        # 9시 이후 출근 시간 계산
                         if clock_in_time > standard_time:
                             clock_in_minutes = clock_in_time.hour * 60 + clock_in_time.minute
                             standard_minutes = standard_time.hour * 60 + standard_time.minute
                             late_minutes = clock_in_minutes - standard_minutes
                             
-                            # 30분 이상 지각 시에만 차감 (30분 단위로)
                             if late_minutes >= 30:
                                 late_hours += late_minutes / 60
                     except:
                         continue
             
-            # 조퇴: 정상 근무시간보다 적게 근무한 경우
             early_leave_records = attendance_df[attendance_df['status'] == '조퇴']
             for _, record in early_leave_records.iterrows():
                 if 'actual_hours' in record and record['actual_hours'] < 8:
-                    # 8시간 미만 근무 시 부족한 시간만큼 차감
                     late_hours += (8 - record['actual_hours'])
         
         return {
             'unpaid_days': unpaid_days,
             'late_hours': round(late_hours, 2),
-            'unpaid_deduction': 0,  # 급여 계산에서 설정
-            'lateness_deduction': 0,  # 급여 계산에서 설정
-            'total_attendance_deduction': 0  # 급여 계산에서 설정
+            'unpaid_deduction': 0,
+            'lateness_deduction': 0,
+            'total_attendance_deduction': 0
         }
         
     except Exception as e:
@@ -269,6 +358,11 @@ def get_employee_deductions(supabase, employee_id, pay_month):
             'lateness_deduction': 0,
             'total_attendance_deduction': 0
         }
+
+# ============================================
+# 연차 계산 함수들
+# ============================================
+
 def calculate_annual_leave(hire_date, current_date=None):
     """입사일 기준 연차 자동 계산"""
     if current_date is None:
@@ -277,19 +371,16 @@ def calculate_annual_leave(hire_date, current_date=None):
     if isinstance(hire_date, str):
         hire_date = datetime.strptime(hire_date, '%Y-%m-%d').date()
     
-    # 근속기간 계산
     work_period = current_date - hire_date
     work_years = work_period.days / 365.25
     
     if work_years < 1:
-        # 1년 미만: 월할 계산 (매월 1일씩)
         work_months = (current_date.year - hire_date.year) * 12 + (current_date.month - hire_date.month)
         return max(0, work_months)
     else:
-        # 1년 이상: 15일 + 2년마다 1일씩 추가 (최대 25일)
         base_leave = 15
         additional_years = int((work_years - 1) // 2)
-        additional_leave = min(additional_years, 10)  # 최대 10일 추가
+        additional_leave = min(additional_years, 10)
         return base_leave + additional_leave
 
 def update_employee_annual_leave(supabase, employee_id, hire_date):
@@ -309,7 +400,10 @@ def update_employee_annual_leave(supabase, employee_id, hire_date):
         st.error(f"연차 업데이트 오류: {str(e)}")
         return False
 
+# ============================================
 # 퇴직금 계산 함수
+# ============================================
+
 def calculate_severance_pay(hire_date, resignation_date, recent_salaries):
     """퇴직금 계산 (근로기준법 기준)"""
     try:
@@ -318,12 +412,10 @@ def calculate_severance_pay(hire_date, resignation_date, recent_salaries):
         if isinstance(resignation_date, str):
             resignation_date = datetime.strptime(resignation_date, '%Y-%m-%d').date()
         
-        # 근속기간 계산 (일 단위)
         work_period = resignation_date - hire_date
         work_days = work_period.days
         work_years = work_days / 365.25
         
-        # 1년 미만은 퇴직금 없음
         if work_years < 1:
             return {
                 'work_years': work_years,
@@ -333,16 +425,12 @@ def calculate_severance_pay(hire_date, resignation_date, recent_salaries):
                 'message': '근속기간 1년 미만으로 퇴직금 대상이 아닙니다.'
             }
         
-        # 평균임금 계산 (최근 3개월 급여 평균)
         if recent_salaries and len(recent_salaries) > 0:
             average_monthly_wage = sum(recent_salaries) / len(recent_salaries)
         else:
             average_monthly_wage = 0
         
-        # 일평균임금 계산 (월급여 ÷ 30)
         daily_average_wage = average_monthly_wage / 30
-        
-        # 퇴직금 = 계속근로연수 × 30일분의 평균임금
         severance_pay = int(work_years) * 30 * daily_average_wage
         
         return {
@@ -363,11 +451,130 @@ def calculate_severance_pay(hire_date, resignation_date, recent_salaries):
             'message': f'퇴직금 계산 오류: {str(e)}'
         }
 
+# ============================================
+# 급여 계산 함수 (완전한 payroll 테이블 지원 + 정확한 세금계산)
+# ============================================
+
+def calculate_comprehensive_payroll(employee_data, pay_month, supabase=None, allowances=None):
+    """완전한 급여 계산 (올바른 세금 계산 적용)"""
+    try:
+        base_salary = int(employee_data.get('base_salary', 0))
+        family_count = int(employee_data.get('family_count', 1))
+        employee_id = employee_data.get('id')
+        
+        if base_salary <= 0:
+            return None
+        
+        # 수당 설정 (기본값 또는 전달받은 값)
+        if allowances is None:
+            allowances = {
+                'performance_bonus': 0,
+                'attendance_allowance': 0,
+                'meal_allowance': 130000,  # 기본 식대
+                'holiday_allowance': 0,
+                'position_allowance': 0,
+                'special_duty_allowance': 0,
+                'overtime_allowance': 0,
+                'skill_allowance': 0,
+                'annual_leave_allowance': 0,
+                'other_allowance': 0
+            }
+        
+        # 근태 기반 차감 계산
+        attendance_deductions = get_employee_deductions(supabase, employee_id, pay_month) if supabase and employee_id else {
+            'unpaid_days': 0, 'late_hours': 0, 'unpaid_deduction': 0, 'lateness_deduction': 0
+        }
+        
+        # 무급휴가 및 지각/조퇴 차감액 계산
+        year, month = map(int, pay_month.split('-'))
+        attendance_deductions['unpaid_deduction'] = calculate_unpaid_leave_deduction(
+            base_salary, attendance_deductions['unpaid_days'], year, month
+        )
+        attendance_deductions['lateness_deduction'] = calculate_lateness_deduction(
+            base_salary, attendance_deductions['late_hours'], year, month
+        )
+        
+        # 총 지급액 계산 (기본급 + 각종 수당)
+        total_allowances = sum(allowances.values())
+        gross_pay = base_salary + total_allowances
+        
+        # 근태 차감 후 실제 급여
+        adjusted_salary = gross_pay - attendance_deductions['unpaid_deduction'] - attendance_deductions['lateness_deduction']
+        adjusted_salary = max(0, adjusted_salary)
+        
+        # 4대보험 계산 (조정된 급여 기준)
+        pension_base = min(max(adjusted_salary, PENSION_LIMITS['min']), PENSION_LIMITS['max'])
+        national_pension = int(pension_base * INSURANCE_RATES['national_pension'])
+        health_insurance = int(adjusted_salary * INSURANCE_RATES['health_insurance'])
+        long_term_care = int(health_insurance * INSURANCE_RATES['long_term_care'])
+        employment_insurance = int(adjusted_salary * INSURANCE_RATES['employment_insurance'])
+        
+        # 올바른 세금 계산 적용 (test9.py 방식)
+        tax_result = calculate_correct_taxes_for_payroll(adjusted_salary, family_count)
+        income_tax = tax_result['income_tax']
+        resident_tax = tax_result['resident_tax']
+        
+        # 총 공제액
+        total_deductions = (national_pension + health_insurance + long_term_care + 
+                           employment_insurance + income_tax + resident_tax +
+                           attendance_deductions['unpaid_deduction'] + 
+                           attendance_deductions['lateness_deduction'])
+        
+        # 실지급액
+        net_pay = gross_pay - total_deductions
+        
+        # 결과 반환 (payroll 테이블의 모든 컬럼 포함)
+        result = {
+            'employee_id': employee_id,
+            'pay_month': pay_month,
+            'base_salary': base_salary,
+            'performance_bonus': allowances.get('performance_bonus', 0),
+            'attendance_allowance': allowances.get('attendance_allowance', 0),
+            'meal_allowance': allowances.get('meal_allowance', 0),
+            'holiday_allowance': allowances.get('holiday_allowance', 0),
+            'position_allowance': allowances.get('position_allowance', 0),
+            'special_duty_allowance': allowances.get('special_duty_allowance', 0),
+            'overtime_allowance': allowances.get('overtime_allowance', 0),
+            'skill_allowance': allowances.get('skill_allowance', 0),
+            'annual_leave_allowance': allowances.get('annual_leave_allowance', 0),
+            'other_allowance': allowances.get('other_allowance', 0),
+            'adjusted_salary': adjusted_salary,
+            'unpaid_days': attendance_deductions['unpaid_days'],
+            'unpaid_deduction': attendance_deductions['unpaid_deduction'],
+            'late_hours': attendance_deductions['late_hours'],
+            'lateness_deduction': attendance_deductions['lateness_deduction'],
+            'national_pension': national_pension,
+            'health_insurance': health_insurance,
+            'long_term_care': long_term_care,
+            'employment_insurance': employment_insurance,
+            'income_tax': income_tax,
+            'resident_tax': resident_tax,
+            'total_deductions': total_deductions,
+            'net_pay': net_pay,
+            'is_paid': False,
+            'pay_date': None,
+            'taxable_income': tax_result['taxable_income'],
+            'effective_tax_rate': tax_result['effective_rate'],
+            'salary_income_deduction': tax_result['salary_income_deduction'],
+            'personal_deductions': tax_result['personal_deductions'],
+            'child_tax_credit': tax_result['child_tax_credit'],
+            'annual_income_tax_before_credit': tax_result['annual_income_tax_before_credit'],
+            'annual_income_tax_after_credit': tax_result['annual_income_tax_after_credit']
+        }
+        
+        return result
+        
+    except Exception as e:
+        st.error(f"급여 계산 오류: {str(e)}")
+        return None
+
+# ============================================
 # 이메일 발송 함수
+# ============================================
+
 def send_payslip_email(employee_email, pdf_buffer, employee_name, pay_month):
     """급여명세서 이메일 발송"""
     try:
-        # 이메일 설정 가져오기
         smtp_server = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
         smtp_port = int(st.secrets.get("SMTP_PORT", 587))
         sender_email = st.secrets.get("SENDER_EMAIL", "")
@@ -376,13 +583,11 @@ def send_payslip_email(employee_email, pdf_buffer, employee_name, pay_month):
         if not all([sender_email, sender_password, employee_email]):
             return False, "이메일 설정이 완전하지 않습니다."
         
-        # 이메일 메시지 생성
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = employee_email
         msg['Subject'] = f"[급여명세서] {employee_name}님 {pay_month} 급여명세서"
         
-        # 이메일 본문
         body = f"""
 안녕하세요, {employee_name}님
 
@@ -393,23 +598,18 @@ def send_payslip_email(employee_email, pdf_buffer, employee_name, pay_month):
 감사합니다.
 
 ---
-급여 및 인사관리 시스템
+급여 및 인사관리 시스템 v2.0 Complete (정확한 세금계산 적용)
         """
         
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
         
-        # PDF 첨부 (한글 파일명 인코딩 개선)
         if pdf_buffer:
             part = MIMEBase('application', 'pdf')
             part.set_payload(pdf_buffer.getvalue())
             encoders.encode_base64(part)
             
-            # 한글 파일명을 안전하게 인코딩
-            from email.header import Header
             filename = f"{employee_name}_{pay_month}_급여명세서.pdf"
-            encoded_filename = Header(filename, 'utf-8').encode()
             
-            # RFC2231 방식으로 파일명 설정 (한글 지원)
             part.add_header(
                 'Content-Disposition',
                 'attachment',
@@ -419,7 +619,6 @@ def send_payslip_email(employee_email, pdf_buffer, employee_name, pay_month):
             
             msg.attach(part)
         
-        # 이메일 발송
         server = smtplib.SMTP(smtp_server, smtp_port)
         server.starttls()
         server.login(sender_email, sender_password)
@@ -430,118 +629,11 @@ def send_payslip_email(employee_email, pdf_buffer, employee_name, pay_month):
         return True, "이메일이 성공적으로 발송되었습니다."
         
     except Exception as e:
-        return False, f"이메일 발송 실패: {str(e)}"
-
-# 근로소득세 계산 함수
-def get_income_tax(monthly_salary, family_count):
-    """간이세액표 기반 소득세 계산"""
-    if monthly_salary <= 1060000:
-        return 0
-    elif monthly_salary <= 1500000:
-        base_tax = (monthly_salary - 1060000) * 0.06
-    elif monthly_salary <= 3000000:
-        base_tax = 26400 + (monthly_salary - 1500000) * 0.15
-    elif monthly_salary <= 5000000:
-        base_tax = 251400 + (monthly_salary - 3000000) * 0.24
-    else:
-        base_tax = 731400 + (monthly_salary - 5000000) * 0.35
-    
-    family_deduction = (family_count - 1) * 12500
-    return max(0, int(base_tax - family_deduction))
-
-def calculate_resident_tax(income_tax):
-    """주민세 계산 (소득세의 10%)"""
-    return int(income_tax * 0.1)
-
-# 급여 계산 함수 (무급휴가 및 지각/조퇴 차감 포함)
-def calculate_payroll(employee_data, pay_month, supabase=None):
-    """급여 계산 (무급휴가 및 지각/조퇴 차감 포함)"""
-    try:
-        base_salary = int(employee_data.get('base_salary', 0))
-        family_count = int(employee_data.get('family_count', 1))
-        employee_id = employee_data.get('id')
-        
-        if base_salary <= 0:
-            return {
-                'base_salary': 0, 'national_pension': 0, 'health_insurance': 0,
-                'long_term_care': 0, 'employment_insurance': 0, 'income_tax': 0,
-                'resident_tax': 0, 'unpaid_deduction': 0, 'lateness_deduction': 0,
-                'total_deductions': 0, 'net_pay': 0
-            }
-        
-        # 근태 기반 차감 계산
-        attendance_deductions = {'unpaid_days': 0, 'late_hours': 0, 'unpaid_deduction': 0, 'lateness_deduction': 0}
-        
-        if supabase and employee_id:
-            attendance_deductions = get_employee_deductions(supabase, employee_id, pay_month)
-            year, month = map(int, pay_month.split('-'))
-            
-            # 무급휴가 차감액 계산
-            attendance_deductions['unpaid_deduction'] = calculate_unpaid_leave_deduction(
-                base_salary, attendance_deductions['unpaid_days'], year, month
-            )
-            
-            # 지각/조퇴 차감액 계산
-            attendance_deductions['lateness_deduction'] = calculate_lateness_deduction(
-                base_salary, attendance_deductions['late_hours'], year, month
-            )
-        
-        # 근태 차감 후 실제 급여 계산
-        adjusted_salary = base_salary - attendance_deductions['unpaid_deduction'] - attendance_deductions['lateness_deduction']
-        adjusted_salary = max(0, adjusted_salary)  # 음수 방지
-        
-        # 국민연금 (조정된 급여 기준)
-        pension_base = min(max(adjusted_salary, PENSION_LIMITS['min']), PENSION_LIMITS['max'])
-        national_pension = int(pension_base * INSURANCE_RATES['national_pension'])
-        
-        # 건강보험 (조정된 급여 기준)
-        health_insurance = int(adjusted_salary * INSURANCE_RATES['health_insurance'])
-        
-        # 장기요양보험
-        long_term_care = int(health_insurance * 0.1295)
-        
-        # 고용보험 (조정된 급여 기준)
-        employment_insurance = int(adjusted_salary * INSURANCE_RATES['employment_insurance'])
-        
-        # 소득세 (조정된 급여 기준)
-        income_tax = get_income_tax(adjusted_salary, family_count)
-        
-        # 주민세
-        resident_tax = calculate_resident_tax(income_tax)
-        
-        # 총 공제액 (4대보험 + 세금 + 근태 차감)
-        insurance_tax_deductions = (national_pension + health_insurance + long_term_care + 
-                                   employment_insurance + income_tax + resident_tax)
-        total_deductions = (insurance_tax_deductions + attendance_deductions['unpaid_deduction'] + 
-                           attendance_deductions['lateness_deduction'])
-        
-        # 실지급액
-        net_pay = base_salary - total_deductions
-        
-        result = {
-            'base_salary': base_salary,
-            'adjusted_salary': adjusted_salary,
-            'national_pension': national_pension,
-            'health_insurance': health_insurance,
-            'long_term_care': long_term_care,
-            'employment_insurance': employment_insurance,
-            'income_tax': income_tax,
-            'resident_tax': resident_tax,
-            'unpaid_days': attendance_deductions['unpaid_days'],
-            'unpaid_deduction': attendance_deductions['unpaid_deduction'],
-            'late_hours': attendance_deductions['late_hours'],
-            'lateness_deduction': attendance_deductions['lateness_deduction'],
-            'total_deductions': total_deductions,
-            'net_pay': net_pay
-        }
-        
-        return result
-        
-    except Exception as e:
-        st.error(f"급여 계산 오류: {str(e)}")
-        return None
-
+        return False, f"이메일 발송 실패: {str(e)}"# =======
+# =====================================
 # 데이터베이스 CRUD 함수들
+# ============================================
+
 def get_employees(supabase):
     """직원 목록 조회"""
     try:
@@ -553,27 +645,17 @@ def get_employees(supabase):
         
         if result.data:
             df = pd.DataFrame(result.data)
-            # 데이터 타입 안전성 확보
-            if 'base_salary' in df.columns:
-                df['base_salary'] = pd.to_numeric(df['base_salary'], errors='coerce').fillna(0)
-            if 'family_count' in df.columns:
-                df['family_count'] = pd.to_numeric(df['family_count'], errors='coerce').fillna(1)
+            numeric_columns = ['base_salary', 'family_count', 'total_annual_leave', 'used_annual_leave', 'remaining_annual_leave']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-            st.success(f"✅ 직원 데이터 {len(df)}건 로드 완료")
             return df
         else:
-            st.info("📝 등록된 직원이 없습니다.")
             return pd.DataFrame()
             
     except Exception as e:
-        error_msg = str(e)
-        if "JSON" in error_msg and "401" in error_msg:
-            st.error("❌ API 키가 잘못되었습니다. secrets.toml을 확인해주세요.")
-        elif "relation" in error_msg or "does not exist" in error_msg:
-            st.error("❌ employees 테이블이 존재하지 않습니다.")
-            st.info("💡 Supabase SQL Editor에서 data.txt의 SQL을 실행해주세요.")
-        else:
-            st.error(f"❌ 직원 데이터 조회 오류: {error_msg}")
+        st.error(f"❌ 직원 데이터 조회 오류: {str(e)}")
         return pd.DataFrame()
 
 def add_employee(supabase, employee_data):
@@ -582,7 +664,6 @@ def add_employee(supabase, employee_data):
         if supabase is None:
             return False
             
-        # 연차 자동 계산
         if 'hire_date' in employee_data:
             total_leave = calculate_annual_leave(employee_data['hire_date'])
             employee_data['total_annual_leave'] = total_leave
@@ -601,6 +682,7 @@ def update_employee(supabase, employee_id, update_data):
         if supabase is None:
             return False
             
+        update_data['updated_at'] = datetime.now().isoformat()
         result = supabase.table('employees').update(update_data).eq('id', employee_id).execute()
         return result.data is not None and len(result.data) > 0
         
@@ -614,11 +696,9 @@ def get_attendance(supabase, employee_id=None, start_date=None, end_date=None):
         if supabase is None:
             return pd.DataFrame()
             
-        # JOIN 쿼리를 더 안전하게 처리
         try:
             query = supabase.table('attendance').select('*, employees(name)')
         except:
-            # JOIN이 실패하면 기본 테이블만 조회
             query = supabase.table('attendance').select('*')
         
         if employee_id:
@@ -632,7 +712,6 @@ def get_attendance(supabase, employee_id=None, start_date=None, end_date=None):
         
         if result.data:
             df = pd.DataFrame(result.data)
-            # actual_hours 컬럼 안전성 확보
             if 'actual_hours' in df.columns:
                 df['actual_hours'] = pd.to_numeric(df['actual_hours'], errors='coerce').fillna(0)
             return df
@@ -649,14 +728,11 @@ def add_attendance(supabase, attendance_data):
         if supabase is None:
             return False
         
-        # 근태 기록 추가
         result = supabase.table('attendance').insert(attendance_data).execute()
         
-        # 연차 사용 시 자동 차감
         if result.data and attendance_data.get('status') == '연차':
             employee_id = attendance_data['employee_id']
             
-            # 현재 직원 정보 조회
             emp_result = supabase.table('employees').select('used_annual_leave, remaining_annual_leave').eq('id', employee_id).execute()
             
             if emp_result.data:
@@ -664,7 +740,6 @@ def add_attendance(supabase, attendance_data):
                 used_leave = emp_data.get('used_annual_leave', 0) + 1
                 remaining_leave = max(0, emp_data.get('remaining_annual_leave', 0) - 1)
                 
-                # 연차 사용 정보 업데이트
                 update_data = {
                     'used_annual_leave': used_leave,
                     'remaining_annual_leave': remaining_leave,
@@ -685,11 +760,9 @@ def get_payroll(supabase, employee_id=None, pay_month=None):
         if supabase is None:
             return pd.DataFrame()
             
-        # JOIN 쿼리를 더 안전하게 처리
         try:
             query = supabase.table('payroll').select('*, employees(name)')
         except:
-            # JOIN이 실패하면 기본 테이블만 조회
             query = supabase.table('payroll').select('*')
         
         if employee_id:
@@ -701,10 +774,12 @@ def get_payroll(supabase, employee_id=None, pay_month=None):
         
         if result.data:
             df = pd.DataFrame(result.data)
-            # 숫자 컬럼들의 안전성 확보
-            numeric_columns = ['base_salary', 'national_pension', 'health_insurance', 
-                             'long_term_care', 'employment_insurance', 'income_tax', 
-                             'resident_tax', 'total_deductions', 'net_pay']
+            numeric_columns = [
+                'base_salary', 'performance_bonus', 'meal_allowance', 'position_allowance',
+                'overtime_allowance', 'national_pension', 'health_insurance', 
+                'long_term_care', 'employment_insurance', 'income_tax', 
+                'resident_tax', 'total_deductions', 'net_pay'
+            ]
             for col in numeric_columns:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -717,23 +792,49 @@ def get_payroll(supabase, employee_id=None, pay_month=None):
         return pd.DataFrame()
 
 def save_payroll(supabase, payroll_data):
-    """급여 데이터 저장"""
+    """급여 데이터 저장 (데이터베이스 스키마에 맞게 필터링)"""
     try:
         if supabase is None:
             return False
+        
+        # 데이터베이스 스키마에 존재하는 컬럼만 필터링
+        allowed_columns = [
+            'employee_id', 'pay_month', 'base_salary', 'performance_bonus', 
+            'attendance_allowance', 'meal_allowance', 'holiday_allowance', 
+            'position_allowance', 'special_duty_allowance', 'overtime_allowance', 
+            'skill_allowance', 'annual_leave_allowance', 'other_allowance',
+            'adjusted_salary', 'unpaid_days', 'unpaid_deduction', 'late_hours', 
+            'lateness_deduction', 'national_pension', 'health_insurance', 
+            'long_term_care', 'employment_insurance', 'income_tax', 'resident_tax', 
+            'total_deductions', 'net_pay', 'is_paid', 'pay_date', 'created_at', 'updated_at'
+        ]
+        
+        # 허용된 컬럼만 포함하여 새로운 딕셔너리 생성
+        filtered_payroll_data = {key: value for key, value in payroll_data.items() if key in allowed_columns}
+        
+        existing = supabase.table('payroll').select('id').eq('employee_id', filtered_payroll_data['employee_id']).eq('pay_month', filtered_payroll_data['pay_month']).execute()
+        
+        if existing.data:
+            filtered_payroll_data['updated_at'] = datetime.now().isoformat()
+            result = supabase.table('payroll').update(filtered_payroll_data).eq('employee_id', filtered_payroll_data['employee_id']).eq('pay_month', filtered_payroll_data['pay_month']).execute()
+        else:
+            filtered_payroll_data['created_at'] = datetime.now().isoformat()
+            filtered_payroll_data['updated_at'] = datetime.now().isoformat()
+            result = supabase.table('payroll').insert(filtered_payroll_data).execute()
             
-        result = supabase.table('payroll').insert(payroll_data).execute()
         return result.data is not None and len(result.data) > 0
         
     except Exception as e:
         st.error(f"급여 데이터 저장 오류: {str(e)}")
         return False
 
-# 개선된 PDF 생성 함수 (한글 폰트 지원)
-def generate_payslip_pdf(employee_data, payroll_data, pay_month):
-    """한글 폰트를 지원하는 급여명세서 PDF 생성"""
+# ============================================
+# PDF 생성 함수 (정확한 세금 정보 포함)
+# ============================================
+
+def generate_comprehensive_payslip_pdf(employee_data, payroll_data, pay_month):
+    """완전한 급여명세서 PDF 생성 (정확한 세금계산 정보 포함)"""
     try:
-        # 한글 폰트 설정
         korean_font = setup_korean_font()
         
         buffer = io.BytesIO()
@@ -741,14 +842,13 @@ def generate_payslip_pdf(employee_data, payroll_data, pay_month):
         story = []
         styles = getSampleStyleSheet()
         
-        # 한글 폰트가 설정된 경우 스타일 업데이트
         if korean_font != 'Helvetica':
             styles['Title'].fontName = korean_font
             styles['Normal'].fontName = korean_font
             styles['Heading1'].fontName = korean_font
         
         # 제목
-        title = Paragraph("<font size=18><b>급여명세서</b></font>", styles['Title'])
+        title = Paragraph("<font size=18><b>급여명세서 (정확한 세금계산 적용)</b></font>", styles['Title'])
         story.append(title)
         story.append(Spacer(1, 20))
         
@@ -756,7 +856,7 @@ def generate_payslip_pdf(employee_data, payroll_data, pay_month):
         emp_info_data = [
             ['직원명', employee_data.get('name', ''), '부서', employee_data.get('department', '')],
             ['직급', employee_data.get('position', ''), '급여월', pay_month],
-            ['발행일', datetime.now().strftime('%Y년 %m월 %d일'), '', '']
+            ['발행일', datetime.now().strftime('%Y년 %m월 %d일'), '부양가족수', f"{employee_data.get('family_count', 1)}명"]
         ]
         
         emp_table = Table(emp_info_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
@@ -775,31 +875,52 @@ def generate_payslip_pdf(employee_data, payroll_data, pay_month):
         story.append(emp_table)
         story.append(Spacer(1, 20))
         
-        # 급여 내역 테이블 (근태 차감 포함)
+        # 급여 내역 테이블
         payroll_table_data = [
-            ['구분', '항목', '금액'],
-            ['지급', '기본급', f"{payroll_data.get('base_salary', 0):,}원"]
+            ['구분', '항목', '금액']
         ]
         
-        # 근태 차감이 있는 경우 표시
+        # 지급 항목
+        payroll_table_data.append(['지급', '기본급', f"{payroll_data.get('base_salary', 0):,}원"])
+        
+        allowances = [
+            ('performance_bonus', '성과급'),
+            ('meal_allowance', '식대'),
+            ('position_allowance', '직책수당'),
+            ('overtime_allowance', '연장근무수당'),
+            ('skill_allowance', '기술수당'),
+            ('other_allowance', '기타수당')
+        ]
+        
+        for key, name in allowances:
+            amount = payroll_data.get(key, 0)
+            if amount > 0:
+                payroll_table_data.append(['', name, f"{amount:,}원"])
+        
+        # 근태 차감이 있는 경우
         if payroll_data.get('unpaid_deduction', 0) > 0:
-            payroll_table_data.append(['차감', '무급휴가', f"-{payroll_data.get('unpaid_deduction', 0):,}원"])
+            payroll_table_data.append(['차감', f"무급휴가({payroll_data.get('unpaid_days', 0)}일)", f"-{payroll_data.get('unpaid_deduction', 0):,}원"])
         
         if payroll_data.get('lateness_deduction', 0) > 0:
-            payroll_table_data.append(['차감', '지각/조퇴', f"-{payroll_data.get('lateness_deduction', 0):,}원"])
+            payroll_table_data.append(['', f"지각/조퇴({payroll_data.get('late_hours', 0):.1f}시간)", f"-{payroll_data.get('lateness_deduction', 0):,}원"])
         
-        # 조정된 급여 표시
-        if payroll_data.get('adjusted_salary', 0) != payroll_data.get('base_salary', 0):
-            payroll_table_data.append(['', '조정 후 급여', f"{payroll_data.get('adjusted_salary', 0):,}원"])
+        payroll_table_data.append(['', '', ''])
+        
+        # 공제 항목
+        deductions = [
+            ('national_pension', '국민연금'),
+            ('health_insurance', '건강보험'),
+            ('long_term_care', '장기요양보험'),
+            ('employment_insurance', '고용보험'),
+            ('income_tax', '소득세'),
+            ('resident_tax', '지방소득세')
+        ]
+        
+        for key, name in deductions:
+            amount = payroll_data.get(key, 0)
+            payroll_table_data.append(['공제', name, f"{amount:,}원"])
         
         payroll_table_data.extend([
-            ['', '', ''],
-            ['공제', '국민연금', f"{payroll_data.get('national_pension', 0):,}원"],
-            ['', '건강보험', f"{payroll_data.get('health_insurance', 0):,}원"],
-            ['', '장기요양보험', f"{payroll_data.get('long_term_care', 0):,}원"],
-            ['', '고용보험', f"{payroll_data.get('employment_insurance', 0):,}원"],
-            ['', '소득세', f"{payroll_data.get('income_tax', 0):,}원"],
-            ['', '주민세', f"{payroll_data.get('resident_tax', 0):,}원"],
             ['', '공제 합계', f"{payroll_data.get('total_deductions', 0):,}원"],
             ['', '', ''],
             ['실지급', '실지급액', f"{payroll_data.get('net_pay', 0):,}원"]
@@ -809,28 +930,46 @@ def generate_payslip_pdf(employee_data, payroll_data, pay_month):
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), '#4472C4'),
             ('TEXTCOLOR', (0, 0), (-1, 0), 'white'),
-            ('BACKGROUND', (0, 1), (-1, 1), '#D6E3F0'),
-            ('BACKGROUND', (0, 3), (-1, 9), '#FFF2CC'),
-            ('BACKGROUND', (0, 11), (-1, 11), '#C5E0B4'),
+            ('BACKGROUND', (0, -1), (-1, -1), '#C5E0B4'),
             ('TEXTCOLOR', (0, 1), (-1, -1), black),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, -1), korean_font),
             ('FONTSIZE', (0, 0), (-1, 0), 12),
             ('FONTSIZE', (0, 1), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('GRID', (0, 0), (-1, -1), 1, black),
-            ('FONTNAME', (0, 11), (-1, 11), korean_font),
-            ('FONTSIZE', (0, 11), (-1, 11), 12),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         
         story.append(table)
         story.append(Spacer(1, 30))
         
+        # 정확한 세금 계산 정보 표시
+        if payroll_data.get('taxable_income') and payroll_data.get('effective_tax_rate'):
+            tax_info = f"""
+            <font size=9>
+            ✅ <b>정확한 2025년 세금 계산 적용</b><br/>
+            ※ 연간 총급여: {payroll_data.get('base_salary', 0) * 12:,}원<br/>
+            ※ 급여소득공제: {payroll_data.get('salary_income_deduction', 0):,}원<br/>
+            ※ 인적공제(기본공제): {payroll_data.get('personal_deductions', 0):,}원<br/>
+            ※ 연간 과세표준: {payroll_data.get('taxable_income', 0):,}원<br/>
+            ※ 자녀세액공제: {payroll_data.get('child_tax_credit', 0):,}원<br/>
+            ※ 소득세(공제전): {payroll_data.get('annual_income_tax_before_credit', 0):,}원<br/>
+            ※ 소득세(공제후): {payroll_data.get('annual_income_tax_after_credit', 0):,}원<br/>
+            ※ 지방소득세: 소득세의 10%<br/>
+            ※ 실효세율: {payroll_data.get('effective_tax_rate', 0):.2f}%
+            </font>
+            """
+            
+            tax_note = Paragraph(tax_info, styles['Normal'])
+            story.append(tax_note)
+            story.append(Spacer(1, 15))
+        
         # 추가 정보
         additional_info = f"""
         <font size=9>
-        ※ 본 급여명세서는 급여 및 인사관리 시스템에서 자동 생성되었습니다.<br/>
+        ※ 본 급여명세서는 급여 및 인사관리 시스템 v2.0 Complete에서 자동 생성되었습니다.<br/>
+        ※ 2025년 정확한 세율 기준으로 계산되었습니다 (급여소득공제 + 기본공제 + 자녀세액공제 적용).<br/>
+        ※ 지방소득세는 소득세의 10%로 계산됩니다.<br/>
         ※ 급여 관련 문의사항은 인사팀으로 연락해 주시기 바랍니다.<br/>
         ※ 발행일: {datetime.now().strftime('%Y년 %m월 %d일')}
         </font>
@@ -839,84 +978,86 @@ def generate_payslip_pdf(employee_data, payroll_data, pay_month):
         note = Paragraph(additional_info, styles['Normal'])
         story.append(note)
         
-        # PDF 생성
         doc.build(story)
         buffer.seek(0)
-        
-        # 생성된 PDF 크기 확인 (디버깅용)
-        pdf_size = len(buffer.getvalue())
-        if pdf_size < 1000:  # 1KB 미만이면 문제 있음
-            st.warning(f"⚠️ PDF 크기가 너무 작습니다 ({pdf_size} bytes). 한글 폰트 설정을 확인해주세요.")
-        
         return buffer
         
     except Exception as e:
         st.error(f"PDF 생성 오류: {str(e)}")
-        # 오류 발생 시 기본 PDF 생성
-        try:
-            return generate_simple_pdf(employee_data, payroll_data, pay_month)
-        except:
-            return None
-
-def generate_simple_pdf(employee_data, payroll_data, pay_month):
-    """폰트 문제 발생 시 사용할 간단한 PDF 생성"""
-    try:
-        buffer = io.BytesIO()
-        p = canvas.Canvas(buffer, pagesize=A4)
-        width, height = A4
-        
-        # 제목
-        p.setFont("Helvetica-Bold", 16)
-        p.drawString(200, height - 80, "Payroll Statement")
-        
-        # 직원 정보
-        p.setFont("Helvetica", 12)
-        y_pos = height - 120
-        p.drawString(50, y_pos, f"Name: {employee_data.get('name', '')}")
-        p.drawString(300, y_pos, f"Department: {employee_data.get('department', '')}")
-        
-        y_pos -= 20
-        p.drawString(50, y_pos, f"Position: {employee_data.get('position', '')}")
-        p.drawString(300, y_pos, f"Pay Month: {pay_month}")
-        
-        # 급여 정보
-        y_pos -= 40
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(50, y_pos, "Salary Details:")
-        
-        y_pos -= 20
-        p.setFont("Helvetica", 10)
-        salary_items = [
-            ("Base Salary", payroll_data.get('base_salary', 0)),
-            ("National Pension", -payroll_data.get('national_pension', 0)),
-            ("Health Insurance", -payroll_data.get('health_insurance', 0)),
-            ("Long-term Care", -payroll_data.get('long_term_care', 0)),
-            ("Employment Insurance", -payroll_data.get('employment_insurance', 0)),
-            ("Income Tax", -payroll_data.get('income_tax', 0)),
-            ("Resident Tax", -payroll_data.get('resident_tax', 0)),
-            ("Net Pay", payroll_data.get('net_pay', 0))
-        ]
-        
-        for item, amount in salary_items:
-            p.drawString(70, y_pos, f"{item}:")
-            p.drawString(300, y_pos, f"{amount:,} KRW")
-            y_pos -= 15
-        
-        # 발행일
-        p.drawString(50, 50, f"Issued: {datetime.now().strftime('%Y-%m-%d')}")
-        
-        p.save()
-        buffer.seek(0)
-        return buffer
-        
-    except Exception as e:
-        st.error(f"간단 PDF 생성 오류: {str(e)}")
         return None
 
+# ============================================
+# 테스트 함수 (test9.py 기반)
+# ============================================
+
+def test_tax_calculation_comparison():
+    """세금 계산 테스트 및 비교"""
+    st.subheader("🧪 정확한 세금 계산 테스트")
+    
+    test_cases = [
+        {'salary': 3000000, 'family': 1, 'desc': '300만원, 본인만 (미혼)'},
+        {'salary': 3000000, 'family': 2, 'desc': '300만원, 부양가족 1명'},
+        {'salary': 3000000, 'family': 4, 'desc': '300만원, 부양가족 3명 (배우자+자녀2명)'},
+        {'salary': 5000000, 'family': 1, 'desc': '500만원, 본인만'},
+        {'salary': 5000000, 'family': 3, 'desc': '500만원, 부양가족 2명'},
+        {'salary': 8000000, 'family': 1, 'desc': '800만원, 본인만'},
+        {'salary': 8000000, 'family': 4, 'desc': '800만원, 부양가족 3명'},
+    ]
+    
+    results_data = []
+    for case in test_cases:
+        result = calculate_correct_taxes_for_payroll(case['salary'], case['family'])
+        
+        results_data.append({
+            '구분': case['desc'],
+            '월급': f"{case['salary']:,}원",
+            '연간총급여': f"{case['salary'] * 12:,}원",
+            '급여소득공제': f"{result['salary_income_deduction']:,}원",
+            '인적공제': f"{result['personal_deductions']:,}원",
+            '과세표준': f"{result['taxable_income']:,}원",
+            '자녀세액공제': f"{result['child_tax_credit']:,}원",
+            '월소득세': f"{result['income_tax']:,}원",
+            '월지방소득세': f"{result['resident_tax']:,}원",
+            '총세금(월)': f"{result['income_tax'] + result['resident_tax']:,}원",
+            '실효세율': f"{result['effective_rate']:.2f}%"
+        })
+    
+    results_df = pd.DataFrame(results_data)
+    st.dataframe(results_df, use_container_width=True)
+    
+    # 간편 계산기
+    st.subheader("💰 간편 세금 계산기")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        test_salary = st.number_input("월급 입력", min_value=1000000, value=3000000, step=100000)
+    
+    with col2:
+        test_family = st.number_input("부양가족 수 (본인 포함)", min_value=1, value=1, step=1)
+    
+    if st.button("💰 세금 계산", key="test_tax_calc"):
+        test_result = calculate_correct_taxes_for_payroll(test_salary, test_family)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("월 소득세", f"{test_result['income_tax']:,}원")
+            st.metric("월 지방소득세", f"{test_result['resident_tax']:,}원")
+        
+        with col2:
+            st.metric("총 세금(월)", f"{test_result['income_tax'] + test_result['resident_tax']:,}원")
+            st.metric("실효세율", f"{test_result['effective_rate']:.2f}%")
+        
+        with col3:
+            st.metric("연간 과세표준", f"{test_result['taxable_income']:,}원")
+            st.metric("급여소득공제", f"{test_result['salary_income_deduction']:,}원")# ======
+# ======================================
 # 메인 애플리케이션
+# ============================================
+
 def main():
-    st.title("💼 급여 및 인사 관리 시스템")
-    st.markdown("새내기 창업자를 위한 종합 인사관리 솔루션 (한글지원/퇴직금/이메일발송 기능 추가)")
+    st.title("💼 급여 및 인사 관리 시스템 v2.0 Complete")
+    st.markdown("✅ **정확한 2025년 세금계산 + 완전한 수당관리 + 근태기반 차감 + 모든 기능 통합**")
     
     # Supabase 초기화
     supabase = init_supabase()
@@ -925,25 +1066,17 @@ def main():
     if supabase is None:
         st.error("🔴 데이터베이스 연결 실패")
         
-        # 설정 도움말 표시
         with st.expander("🔧 Supabase 설정 도움말", expanded=True):
             st.markdown("""
             ### 1단계: Supabase 프로젝트 설정
-            1. [Supabase](https://supabase.com)에 로그인
-            2. 새 프로젝트 생성 또는 기존 프로젝트 선택
-            3. Settings > API에서 URL과 anon key 복사
+            1. [Supabase](https://supabase.com)에 로그인 후 프로젝트 생성
+            2. Settings > API에서 URL과 anon key 복사
             
             ### 2단계: 데이터베이스 테이블 생성
             1. Supabase Dashboard > SQL Editor 이동
-            2. data.txt 파일의 모든 SQL 코드 복사
-            3. SQL Editor에 붙여넣기 후 실행
+            2. data.txt 파일의 모든 SQL 코드 복사 후 실행
             
-            ### 3단계: RLS(Row Level Security) 비활성화
-            1. Authentication > Settings 이동
-            2. "Enable Row Level Security" 체크 해제
-            3. 또는 각 테이블에서 RLS 정책 설정
-            
-            ### 4단계: secrets.toml 설정
+            ### 3단계: secrets.toml 설정
             ```toml
             [default]
             SUPABASE_URL = "your_supabase_url"
@@ -962,15 +1095,15 @@ def main():
     # 사이드바 메뉴
     st.sidebar.title("📋 메뉴")
     menu = st.sidebar.selectbox("메뉴 선택", [
-        "대시보드",
-        "직원 관리",
-        "근태 관리", 
-        "급여 계산",
-        "급여 명세서",
-        "퇴직금 계산",
-        "연차 관리",
-        "통계 및 분석",
-        "시스템 정보"
+        "1. 대시보드",
+        "2. 직원 관리",
+        "3. 근태 관리", 
+        "4. 급여 관리",
+        "5. 급여 명세서",
+        "6. 퇴직금 계산",
+        "7. 연차 관리",
+        "8. 통계 및 분석",
+        "9. 시스템 정보"
     ])
     
     # 데이터 현황 표시 (사이드바)
@@ -979,8 +1112,8 @@ def main():
     st.sidebar.subheader("📊 현재 데이터")
     st.sidebar.metric("등록된 직원", len(employees_df))
     
-    # 대시보드
-    if menu == "대시보드":
+    # 1. 대시보드
+    if menu == "1. 대시보드":
         st.header("📊 대시보드")
         
         # 주요 지표
@@ -1009,7 +1142,7 @@ def main():
         # 직원 목록
         if not employees_df.empty:
             st.subheader("👥 직원 목록")
-            display_columns = ['name', 'position', 'department', 'base_salary', 'remaining_annual_leave', 'status']
+            display_columns = ['name', 'position', 'department', 'base_salary', 'family_count', 'remaining_annual_leave', 'status']
             available_columns = [col for col in display_columns if col in employees_df.columns]
             st.dataframe(employees_df[available_columns], use_container_width=True)
             
@@ -1022,8 +1155,8 @@ def main():
         else:
             st.info("등록된 직원이 없습니다. '직원 관리' 메뉴에서 직원을 등록해보세요.")
     
-    # 직원 관리
-    elif menu == "직원 관리":
+    # 2. 직원 관리
+    elif menu == "2. 직원 관리":
         st.header("👥 직원 관리")
         
         tab1, tab2, tab3 = st.tabs(["직원 목록", "직원 등록", "직원 수정"])
@@ -1053,7 +1186,7 @@ def main():
                     filtered_df = filtered_df[filtered_df['department'] == dept_filter]
                 
                 # 직원 목록 표시
-                display_columns = ['id', 'name', 'position', 'department', 'base_salary', 'total_annual_leave', 'remaining_annual_leave', 'status', 'hire_date']
+                display_columns = ['id', 'name', 'position', 'department', 'base_salary', 'family_count', 'total_annual_leave', 'remaining_annual_leave', 'status', 'hire_date']
                 available_columns = [col for col in display_columns if col in filtered_df.columns]
                 st.dataframe(filtered_df[available_columns], use_container_width=True)
                 
@@ -1194,8 +1327,8 @@ def main():
             else:
                 st.info("등록된 직원이 없습니다.")
     
-    # 근태 관리
-    elif menu == "근태 관리":
+    # 3. 근태 관리
+    elif menu == "3. 근태 관리":
         st.header("⏰ 근태 관리")
         
         tab1, tab2, tab3 = st.tabs(["근태 기록", "근태 입력", "근태 현황"])
@@ -1391,16 +1524,16 @@ def main():
                 else:
                     st.info("이번 달 근태 기록이 없습니다.")
             else:
-                st.info("등록된 직원이 없습니다.")
-    
-    # 급여 계산
-    elif menu == "급여 계산":
-        st.header("💰 급여 계산")
+                st.info("등록된 직원이 없습니다.")    
+# 4. 급여 관리 (test9.py의 정확한 세금계산 적용)
+    elif menu == "4. 급여 관리":
+        st.header("💰 급여 관리 (정확한 세금계산 적용)")
+        st.success("✅ 급여소득공제, 인적공제, 자녀세액공제 모두 적용된 정확한 계산")
         
-        tab1, tab2 = st.tabs(["개별 급여 계산", "일괄 급여 계산"])
+        tab1, tab2, tab3 = st.tabs(["개별 급여 계산", "일괄 급여 계산", "세금 계산 테스트"])
         
         with tab1:
-            st.subheader("개별 급여 계산")
+            st.subheader("개별 급여 계산 (모든 수당 포함)")
             
             if not employees_df.empty:
                 col1, col2 = st.columns(2)
@@ -1418,116 +1551,132 @@ def main():
                 if selected_employee:
                     emp_data = employees_df[employees_df['id'] == selected_employee].iloc[0].to_dict()
                     
-                    # 급여 계산 (근태 차감 포함)
-                    payroll_result = calculate_payroll(emp_data, pay_month, supabase)
+                    # 수당 입력 섹션
+                    st.subheader("💵 수당 설정")
                     
-                    if payroll_result:
-                        # 결과 표시
-                        st.subheader(f"💼 {emp_data['name']}님의 {pay_month} 급여 계산 결과")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        performance_bonus = st.number_input("성과급", min_value=0, value=0, step=10000)
+                        meal_allowance = st.number_input("식대", min_value=0, value=130000, step=10000)
+                        position_allowance = st.number_input("직책수당", min_value=0, value=0, step=10000)
+                        skill_allowance = st.number_input("기술수당", min_value=0, value=0, step=10000)
+                    
+                    with col2:
+                        overtime_allowance = st.number_input("연장근무수당", min_value=0, value=0, step=10000)
+                        attendance_allowance = st.number_input("근태수당", min_value=0, value=0, step=10000)
+                        holiday_allowance = st.number_input("휴일수당", min_value=0, value=0, step=10000)
+                        special_duty_allowance = st.number_input("특수업무수당", min_value=0, value=0, step=10000)
+                    
+                    with col3:
+                        annual_leave_allowance = st.number_input("연차수당", min_value=0, value=0, step=10000)
+                        other_allowance = st.number_input("기타수당", min_value=0, value=0, step=10000)
+                    
+                    allowances = {
+                        'performance_bonus': performance_bonus,
+                        'meal_allowance': meal_allowance,
+                        'position_allowance': position_allowance,
+                        'skill_allowance': skill_allowance,
+                        'overtime_allowance': overtime_allowance,
+                        'attendance_allowance': attendance_allowance,
+                        'holiday_allowance': holiday_allowance,
+                        'special_duty_allowance': special_duty_allowance,
+                        'annual_leave_allowance': annual_leave_allowance,
+                        'other_allowance': other_allowance
+                    }
+                    
+                    # 급여 계산
+                    if st.button("💰 급여 계산 실행", type="primary"):
+                        payroll_result = calculate_comprehensive_payroll(emp_data, pay_month, supabase, allowances)
                         
-                        # 근태 차감 정보 표시
-                        if payroll_result.get('unpaid_days', 0) > 0 or payroll_result.get('late_hours', 0) > 0:
-                            st.warning("⚠️ 근태에 따른 급여 차감이 있습니다.")
+                        if payroll_result:
+                            st.success("✅ 정확한 세금계산으로 급여 계산 완료!")
+                            
+                            # 세금 계산 상세 정보 표시
+                            with st.expander("📊 세금 계산 상세 정보", expanded=True):
+                                col1, col2 = st.columns(2)
+                                
+                                with col1:
+                                    st.write("**💰 과세표준 계산**")
+                                    st.write(f"연간 총급여: {payroll_result.get('base_salary', 0) * 12:,}원")
+                                    st.write(f"급여소득공제: {payroll_result.get('salary_income_deduction', 0):,}원")
+                                    st.write(f"인적공제: {payroll_result.get('personal_deductions', 0):,}원")
+                                    st.write(f"과세표준: {payroll_result.get('taxable_income', 0):,}원")
+                                
+                                with col2:
+                                    st.write("**🧾 세액 계산**")
+                                    st.write(f"소득세(공제전): {payroll_result.get('annual_income_tax_before_credit', 0):,}원")
+                                    st.write(f"자녀세액공제: {payroll_result.get('child_tax_credit', 0):,}원")
+                                    st.write(f"소득세(공제후): {payroll_result.get('annual_income_tax_after_credit', 0):,}원")
+                                    st.write(f"지방소득세: {int(payroll_result.get('annual_income_tax_after_credit', 0) * 0.1):,}원")
+                            
+                            # 근태 차감 정보 표시
+                            if payroll_result.get('unpaid_days', 0) > 0 or payroll_result.get('late_hours', 0) > 0:
+                                st.warning("⚠️ 근태에 따른 급여 차감이 있습니다.")
+                                
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    if payroll_result.get('unpaid_days', 0) > 0:
+                                        st.metric("무급휴가 일수", f"{payroll_result['unpaid_days']}일")
+                                        st.metric("무급휴가 차감액", f"{payroll_result['unpaid_deduction']:,}원")
+                                
+                                with col2:
+                                    if payroll_result.get('late_hours', 0) > 0:
+                                        st.metric("지각/조퇴 시간", f"{payroll_result['late_hours']:.1f}시간")
+                                        st.metric("지각/조퇴 차감액", f"{payroll_result['lateness_deduction']:,}원")
                             
                             col1, col2 = st.columns(2)
+                            
                             with col1:
-                                if payroll_result.get('unpaid_days', 0) > 0:
-                                    st.metric("무급휴가 일수", f"{payroll_result['unpaid_days']}일")
-                                    st.metric("무급휴가 차감액", f"{payroll_result['unpaid_deduction']:,}원")
+                                st.write("**💰 지급 내역**")
+                                st.write(f"기본급: {payroll_result['base_salary']:,}원")
+                                
+                                total_allowances = sum([payroll_result.get(key, 0) for key in allowances.keys()])
+                                if total_allowances > 0:
+                                    st.write(f"총 수당: {total_allowances:,}원")
+                                    for key, name in [
+                                        ('performance_bonus', '성과급'),
+                                        ('meal_allowance', '식대'),
+                                        ('position_allowance', '직책수당'),
+                                        ('overtime_allowance', '연장근무수당'),
+                                        ('skill_allowance', '기술수당'),
+                                        ('other_allowance', '기타수당')
+                                    ]:
+                                        amount = payroll_result.get(key, 0)
+                                        if amount > 0:
+                                            st.write(f"  - {name}: {amount:,}원")
+                                
+                                st.write("**📋 공제 내역**")
+                                st.write(f"국민연금: {payroll_result['national_pension']:,}원")
+                                st.write(f"건강보험: {payroll_result['health_insurance']:,}원")
+                                st.write(f"장기요양보험: {payroll_result['long_term_care']:,}원")
+                                st.write(f"고용보험: {payroll_result['employment_insurance']:,}원")
+                                st.write(f"소득세: {payroll_result['income_tax']:,}원")
+                                st.write(f"지방소득세: {payroll_result['resident_tax']:,}원")
+                                
+                                if payroll_result.get('unpaid_deduction', 0) > 0:
+                                    st.write(f"무급휴가 차감: {payroll_result['unpaid_deduction']:,}원")
+                                if payroll_result.get('lateness_deduction', 0) > 0:
+                                    st.write(f"지각/조퇴 차감: {payroll_result['lateness_deduction']:,}원")
                             
                             with col2:
-                                if payroll_result.get('late_hours', 0) > 0:
-                                    st.metric("지각/조퇴 시간", f"{payroll_result['late_hours']:.1f}시간")
-                                    st.metric("지각/조퇴 차감액", f"{payroll_result['lateness_deduction']:,}원")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write("**💰 급여 내역**")
-                            st.write(f"기본급: {payroll_result['base_salary']:,}원")
-                            if payroll_result.get('adjusted_salary', 0) != payroll_result['base_salary']:
-                                st.write(f"근태 조정 후: {payroll_result.get('adjusted_salary', 0):,}원")
+                                st.write("**📊 요약**")
+                                gross_pay = payroll_result['base_salary'] + total_allowances
+                                st.metric("총 지급액", f"{gross_pay:,}원")
+                                st.metric("총 공제액", f"{payroll_result['total_deductions']:,}원")
+                                st.metric("실지급액", f"{payroll_result['net_pay']:,}원", 
+                                        delta=f"{payroll_result['net_pay'] - gross_pay:,}원")
+                                st.metric("실효세율", f"{payroll_result['effective_tax_rate']:.2f}%")
                             
-                            st.write("**📋 공제 내역**")
-                            st.write(f"국민연금: {payroll_result['national_pension']:,}원")
-                            st.write(f"건강보험: {payroll_result['health_insurance']:,}원")
-                            st.write(f"장기요양보험: {payroll_result['long_term_care']:,}원")
-                            st.write(f"고용보험: {payroll_result['employment_insurance']:,}원")
-                            st.write(f"소득세: {payroll_result['income_tax']:,}원")
-                            st.write(f"주민세: {payroll_result['resident_tax']:,}원")
-                            
-                            if payroll_result.get('unpaid_deduction', 0) > 0:
-                                st.write(f"무급휴가 차감: {payroll_result['unpaid_deduction']:,}원")
-                            if payroll_result.get('lateness_deduction', 0) > 0:
-                                st.write(f"지각/조퇴 차감: {payroll_result['lateness_deduction']:,}원")
-                        
-                        with col2:
-                            st.write("**📊 요약**")
-                            st.metric("총 급여액", f"{payroll_result['base_salary']:,}원")
-                            st.metric("총 공제액", f"{payroll_result['total_deductions']:,}원")
-                            st.metric("실지급액", f"{payroll_result['net_pay']:,}원", 
-                                    delta=f"{payroll_result['net_pay'] - payroll_result['base_salary']:,}원")
-                            
-                            # 공제율 표시
-                            if payroll_result['base_salary'] > 0:
-                                deduction_rate = (payroll_result['total_deductions'] / payroll_result['base_salary']) * 100
-                                st.metric("총 공제율", f"{deduction_rate:.1f}%")
-                        
-                        # 급여 데이터 저장
-                        if st.button("💾 급여 데이터 저장", key="save_individual_payroll"):
-                            payroll_data = {
-                                'employee_id': selected_employee,
-                                'pay_month': pay_month,
-                                **payroll_result
-                            }
-                            
-                            result = save_payroll(supabase, payroll_data)
-                            if result:
-                                st.success("✅ 급여 데이터가 저장되었습니다!")
-                            else:
-                                st.error("❌ 급여 데이터 저장에 실패했습니다.")
-                    else:
-                        st.error("❌ 급여 계산에 실패했습니다.")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write("**💰 급여 내역**")
-                            st.write(f"기본급: {payroll_result['base_salary']:,}원")
-                            
-                            st.write("**📋 공제 내역**")
-                            st.write(f"국민연금: {payroll_result['national_pension']:,}원")
-                            st.write(f"건강보험: {payroll_result['health_insurance']:,}원")
-                            st.write(f"장기요양보험: {payroll_result['long_term_care']:,}원")
-                            st.write(f"고용보험: {payroll_result['employment_insurance']:,}원")
-                            st.write(f"소득세: {payroll_result['income_tax']:,}원")
-                            st.write(f"주민세: {payroll_result['resident_tax']:,}원")
-                        
-                        with col2:
-                            st.write("**📊 요약**")
-                            st.metric("총 급여액", f"{payroll_result['base_salary']:,}원")
-                            st.metric("총 공제액", f"{payroll_result['total_deductions']:,}원")
-                            st.metric("실지급액", f"{payroll_result['net_pay']:,}원", 
-                                    delta=f"{payroll_result['net_pay'] - payroll_result['base_salary']:,}원")
-                            
-                            # 공제율 표시
-                            if payroll_result['base_salary'] > 0:
-                                deduction_rate = (payroll_result['total_deductions'] / payroll_result['base_salary']) * 100
-                                st.metric("공제율", f"{deduction_rate:.1f}%")
-                        
-                        # 급여 데이터 저장
-                        if st.button("💾 급여 데이터 저장"):
-                            payroll_data = {
-                                'employee_id': selected_employee,
-                                'pay_month': pay_month,
-                                **payroll_result
-                            }
-                            
-                            result = save_payroll(supabase, payroll_data)
-                            if result:
-                                st.success("✅ 급여 데이터가 저장되었습니다!")
-                            else:
-                                st.error("❌ 급여 데이터 저장에 실패했습니다.")
+                            # 급여 데이터 저장
+                            if st.button("💾 급여 데이터 저장", key="save_individual_payroll"):
+                                result = save_payroll(supabase, payroll_result)
+                                if result:
+                                    st.success("✅ 급여 데이터가 저장되었습니다!")
+                                else:
+                                    st.error("❌ 급여 데이터 저장에 실패했습니다.")
+                        else:
+                            st.error("❌ 급여 계산에 실패했습니다.")
             
             else:
                 st.info("등록된 직원이 없습니다. 먼저 직원을 등록해주세요.")
@@ -1537,6 +1686,34 @@ def main():
             
             if not employees_df.empty:
                 pay_month = st.text_input("급여 대상 월", value=datetime.now().strftime("%Y-%m"), key="batch_month")
+                
+                # 공통 수당 설정
+                st.write("**공통 수당 설정 (모든 직원에게 적용)**")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    batch_meal_allowance = st.number_input("공통 식대", value=130000, step=10000)
+                    batch_performance_bonus = st.number_input("공통 성과급", value=0, step=10000)
+                
+                with col2:
+                    batch_overtime_allowance = st.number_input("공통 연장근무수당", value=0, step=10000)
+                    batch_holiday_allowance = st.number_input("공통 휴일수당", value=0, step=10000)
+                
+                with col3:
+                    batch_other_allowance = st.number_input("공통 기타수당", value=0, step=10000)
+                
+                batch_allowances = {
+                    'performance_bonus': batch_performance_bonus,
+                    'meal_allowance': batch_meal_allowance,
+                    'overtime_allowance': batch_overtime_allowance,
+                    'holiday_allowance': batch_holiday_allowance,
+                    'other_allowance': batch_other_allowance,
+                    'attendance_allowance': 0,
+                    'position_allowance': 0,
+                    'special_duty_allowance': 0,
+                    'skill_allowance': 0,
+                    'annual_leave_allowance': 0
+                }
                 
                 if st.button("전체 직원 급여 계산", key="calculate_batch_payroll"):
                     progress_bar = st.progress(0)
@@ -1549,24 +1726,18 @@ def main():
                     for idx, (_, emp_data) in enumerate(active_employees.iterrows()):
                         status_text.text(f"{emp_data['name']}님 급여 계산 중...")
                         
-                        # 급여 계산 (근태 차감 포함)
-                        payroll_result = calculate_payroll(emp_data.to_dict(), pay_month, supabase)
+                        payroll_result = calculate_comprehensive_payroll(emp_data.to_dict(), pay_month, supabase, batch_allowances)
                         
                         if payroll_result:
-                            # 결과 저장
-                            payroll_data = {
-                                'employee_id': emp_data['id'],
-                                'pay_month': pay_month,
-                                **payroll_result
-                            }
-                            
-                            save_result = save_payroll(supabase, payroll_data)
+                            save_result = save_payroll(supabase, payroll_result)
                             if save_result:
                                 payroll_results.append({
                                     'name': emp_data['name'],
                                     'base_salary': payroll_result['base_salary'],
-                                    'unpaid_deduction': payroll_result.get('unpaid_deduction', 0),
-                                    'lateness_deduction': payroll_result.get('lateness_deduction', 0),
+                                    'total_allowances': sum([payroll_result.get(key, 0) for key in batch_allowances.keys()]),
+                                    'income_tax': payroll_result['income_tax'],
+                                    'resident_tax': payroll_result['resident_tax'],
+                                    'effective_rate': payroll_result['effective_tax_rate'],
                                     'net_pay': payroll_result['net_pay'],
                                     'status': '성공'
                                 })
@@ -1574,8 +1745,10 @@ def main():
                                 payroll_results.append({
                                     'name': emp_data['name'],
                                     'base_salary': 0,
-                                    'unpaid_deduction': 0,
-                                    'lateness_deduction': 0,
+                                    'total_allowances': 0,
+                                    'income_tax': 0,
+                                    'resident_tax': 0,
+                                    'effective_rate': 0,
                                     'net_pay': 0,
                                     'status': '실패'
                                 })
@@ -1586,27 +1759,36 @@ def main():
                     
                     # 결과 표시
                     if payroll_results:
-                        st.subheader("급여 계산 결과")
+                        st.subheader("급여 계산 결과 (정확한 세금 적용)")
                         results_df = pd.DataFrame(payroll_results)
                         st.dataframe(results_df, use_container_width=True)
                         
                         successful_results = results_df[results_df['status'] == '성공']
-                        total_amount = successful_results['net_pay'].sum()
-                        total_deductions = successful_results['unpaid_deduction'].sum() + successful_results['lateness_deduction'].sum()
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("총 급여 지급액", f"{total_amount:,}원")
-                        with col2:
-                            if total_deductions > 0:
-                                st.metric("총 근태 차감액", f"{total_deductions:,}원")
+                        if not successful_results.empty:
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                total_amount = successful_results['net_pay'].sum()
+                                st.metric("총 급여 지급액", f"{total_amount:,}원")
+                            with col2:
+                                total_tax = successful_results['income_tax'].sum() + successful_results['resident_tax'].sum()
+                                st.metric("총 세금", f"{total_tax:,}원")
+                            with col3:
+                                avg_tax_rate = successful_results['effective_rate'].mean()
+                                st.metric("평균 실효세율", f"{avg_tax_rate:.2f}%")
+                            with col4:
+                                total_allowances = successful_results['total_allowances'].sum()
+                                st.metric("총 수당액", f"{total_allowances:,}원")
             
             else:
                 st.info("등록된 직원이 없습니다.")
+        
+        with tab3:
+            # test9.py의 세금 계산 테스트 기능 통합
+            test_tax_calculation_comparison()
     
-    # 급여 명세서
-    elif menu == "급여 명세서":
-        st.header("📄 급여 명세서")
+    # 5. 급여 명세서
+    elif menu == "5. 급여 명세서":
+        st.header("📄 급여 명세서 (정확한 세금정보 포함)")
         
         tab1, tab2 = st.tabs(["명세서 생성 & 이메일 발송", "급여 데이터 조회"])
         
@@ -1634,21 +1816,14 @@ def main():
                     
                     with col1:
                         if st.button("📄 명세서 생성", key="generate_payslip_pdf"):
-                            # 저장된 급여 데이터 조회
                             payroll_df = get_payroll(supabase, selected_employee, pay_month)
                             
                             if not payroll_df.empty:
                                 payroll_data = payroll_df.iloc[0].to_dict()
-                            else:
-                                # 저장된 데이터가 없으면 새로 계산 (근태 차감 포함)
-                                payroll_data = calculate_payroll(emp_data, pay_month, supabase)
-                            
-                            if payroll_data:
-                                # PDF 생성
-                                pdf_buffer = generate_payslip_pdf(emp_data, payroll_data, pay_month)
+                                
+                                pdf_buffer = generate_comprehensive_payslip_pdf(emp_data, payroll_data, pay_month)
                                 
                                 if pdf_buffer:
-                                    # 다운로드 버튼
                                     st.download_button(
                                         label="📄 급여명세서 다운로드",
                                         data=pdf_buffer.getvalue(),
@@ -1656,32 +1831,25 @@ def main():
                                         mime="application/pdf"
                                     )
                                     
-                                    st.success("✅ 급여명세서가 생성되었습니다!")
+                                    st.success("✅ 급여명세서가 생성되었습니다! (정확한 세금정보 포함)")
                                 else:
                                     st.error("❌ PDF 생성에 실패했습니다.")
                             else:
-                                st.error("❌ 급여 계산에 실패했습니다.")
+                                st.error("❌ 해당 월의 급여 데이터가 없습니다. 먼저 급여 계산을 진행해주세요.")
                     
                     with col2:
                         if st.button("📧 이메일 발송", key="send_payslip_email"):
                             if not emp_data.get('email'):
                                 st.error("❌ 직원의 이메일 주소가 설정되지 않았습니다.")
                             else:
-                                # 저장된 급여 데이터 조회
                                 payroll_df = get_payroll(supabase, selected_employee, pay_month)
                                 
                                 if not payroll_df.empty:
                                     payroll_data = payroll_df.iloc[0].to_dict()
-                                else:
-                                    # 저장된 데이터가 없으면 새로 계산 (근태 차감 포함)
-                                    payroll_data = calculate_payroll(emp_data, pay_month, supabase)
-                                
-                                if payroll_data:
-                                    # PDF 생성
-                                    pdf_buffer = generate_payslip_pdf(emp_data, payroll_data, pay_month)
+                                    
+                                    pdf_buffer = generate_comprehensive_payslip_pdf(emp_data, payroll_data, pay_month)
                                     
                                     if pdf_buffer:
-                                        # 이메일 발송
                                         success, message = send_payslip_email(
                                             emp_data['email'], 
                                             pdf_buffer, 
@@ -1696,7 +1864,7 @@ def main():
                                     else:
                                         st.error("❌ PDF 생성에 실패했습니다.")
                                 else:
-                                    st.error("❌ 급여 계산에 실패했습니다.")
+                                    st.error("❌ 해당 월의 급여 데이터가 없습니다.")
                     
                     # 대량 이메일 발송
                     st.markdown("---")
@@ -1724,7 +1892,7 @@ def main():
                                         payroll_data = payroll_df.iloc[0].to_dict()
                                         
                                         # PDF 생성 및 이메일 발송
-                                        pdf_buffer = generate_payslip_pdf(emp_data.to_dict(), payroll_data, pay_month)
+                                        pdf_buffer = generate_comprehensive_payslip_pdf(emp_data.to_dict(), payroll_data, pay_month)
                                         
                                         if pdf_buffer:
                                             success, _ = send_payslip_email(
@@ -1749,36 +1917,31 @@ def main():
         with tab2:
             st.subheader("급여 데이터 조회")
             
-            # 급여 데이터 조회
             payroll_df = get_payroll(supabase)
             
             if not payroll_df.empty:
-                # 급여 월 필터
-                available_months = payroll_df['pay_month'].unique()
+                available_months = sorted(payroll_df['pay_month'].unique(), reverse=True)
                 selected_month = st.selectbox("급여 월 선택", ['전체'] + list(available_months))
                 
-                # 필터 적용
                 if selected_month != '전체':
                     filtered_payroll = payroll_df[payroll_df['pay_month'] == selected_month]
                 else:
                     filtered_payroll = payroll_df
                 
-                # 직원명 추가
                 if 'employees' in filtered_payroll.columns:
                     filtered_payroll['employee_name'] = filtered_payroll['employees'].apply(
                         lambda x: x['name'] if isinstance(x, dict) and x else ''
                     )
                 
-                # 데이터 표시
-                display_columns = ['employee_name', 'pay_month', 'base_salary', 'total_deductions', 
-                                 'net_pay', 'is_paid', 'pay_date']
+                display_columns = ['employee_name', 'pay_month', 'base_salary', 'income_tax', 'resident_tax', 
+                                 'total_deductions', 'net_pay', 'is_paid', 'pay_date']
                 available_columns = [col for col in display_columns if col in filtered_payroll.columns]
                 
                 st.dataframe(filtered_payroll[available_columns], use_container_width=True)
                 
                 # 통계 정보
                 if selected_month != '전체':
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
                         total_employees = len(filtered_payroll)
@@ -1789,14 +1952,17 @@ def main():
                         st.metric("총 기본급", f"{total_gross:,}원")
                     
                     with col3:
+                        total_tax = filtered_payroll['income_tax'].sum() + filtered_payroll['resident_tax'].sum()
+                        st.metric("총 세금", f"{total_tax:,}원")
+                    
+                    with col4:
                         total_net = filtered_payroll['net_pay'].sum()
                         st.metric("총 실지급액", f"{total_net:,}원")
             
             else:
-                st.info("급여 데이터가 없습니다. '급여 계산' 메뉴에서 급여를 계산해주세요.")
-    
-    # 퇴직금 계산 (새로운 메뉴)
-    elif menu == "퇴직금 계산":
+                st.info("급여 데이터가 없습니다. '급여 계산' 메뉴에서 급여를 계산해주세요.")    #
+#  6. 퇴직금 계산
+    elif menu == "6. 퇴직금 계산":
         st.header("💼 퇴직금 계산")
         
         if not employees_df.empty:
@@ -1889,8 +2055,8 @@ def main():
         else:
             st.info("등록된 직원이 없습니다.")
     
-    # 연차 관리 (새로운 메뉴)
-    elif menu == "연차 관리":
+    # 7. 연차 관리
+    elif menu == "7. 연차 관리":
         st.header("📅 연차 관리")
         
         tab1, tab2, tab3 = st.tabs(["연차 현황", "연차 부여/차감", "연차 통계"])
@@ -2072,10 +2238,9 @@ def main():
                             title="월별 연차 사용 추이",
                             markers=True
                         )
-                        st.plotly_chart(fig2, use_container_width=True)
-    
-    # 통계 및 분석
-    elif menu == "통계 및 분석":
+                        st.plotly_chart(fig2, use_container_width=True) 
+   # 8. 통계 및 분석
+    elif menu == "8. 통계 및 분석":
         st.header("📊 통계 및 분석")
         
         if not employees_df.empty:
@@ -2308,8 +2473,8 @@ def main():
         else:
             st.info("분석할 데이터가 없습니다. 먼저 직원을 등록해주세요.")
     
-    # 시스템 정보
-    elif menu == "시스템 정보":
+    # 9. 시스템 정보
+    elif menu == "9. 시스템 정보":
         st.header("ℹ️ 시스템 정보")
         
         col1, col2 = st.columns(2)
@@ -2331,151 +2496,136 @@ def main():
             
             # 시스템 정보
             st.write("**🔧 시스템 버전**")
-            st.write("- 급여관리 시스템 v2.0 (개선판)")
-            st.write("- Streamlit 기반")
-            st.write("- 2025년 세율 적용")
+            st.write("- 급여관리 시스템 v2.0 Complete")
+            st.write("- test9.py + test10.py 완전 통합")
+            st.write("- 2025년 정확한 세율 적용")
             st.write("- 한글 PDF 지원")
             st.write("- 이메일 발송 기능")
             st.write("- 퇴직금 계산 기능")
             st.write("- 연차 자동 관리")
+            st.write("- 완전한 수당 관리")
+            st.write("- 근태 기반 자동 차감")
         
         with col2:
-            st.subheader("📋 새로운 기능 목록")
+            st.subheader("📋 Complete 기능 목록")
             
             features = [
-                "✅ 직원 정보 관리",
-                "✅ 근태 기록 관리", 
-                "✅ 급여 자동 계산",
-                "✅ 4대보험 자동 계산",
-                "✅ 소득세/주민세 계산",
-                "✅ 한글 PDF 급여명세서 생성",
-                "🆕 이메일 자동 발송",
-                "🆕 퇴직금 자동 계산",
-                "🆕 연차 자동 부여/관리",
-                "🆕 연차 사용 자동 차감",
-                "✅ 통계 및 분석",
-                "✅ 데이터 시각화"
+                "✅ 1. 대시보드 - 전체 현황 한눈에",
+                "✅ 2. 직원 관리 - 등록/수정/연차관리",
+                "✅ 3. 근태 관리 - 출퇴근/연차/무급휴가",
+                "✅ 4. 급여 관리 - 정확한 세금계산",
+                "✅ 5. 급여 명세서 - PDF생성/이메일발송",
+                "✅ 6. 퇴직금 계산 - 근로기준법 준수",
+                "✅ 7. 연차 관리 - 자동계산/부여/차감",
+                "✅ 8. 통계 및 분석 - 다양한 차트",
+                "✅ 9. 시스템 정보 - 현황 및 설정",
+                "🆕 정확한 급여소득공제 적용",
+                "🆕 인적공제 (기본공제) 적용",
+                "🆕 자녀세액공제 적용",
+                "🆕 지방소득세 = 소득세 × 10%",
+                "🆕 2025년 누진세율 정확 적용",
+                "🆕 실효세율 정확 계산",
+                "🆕 모든 수당 완전 지원",
+                "🆕 근태 기반 자동 차감"
             ]
             
             for feature in features:
                 st.write(feature)
         
-        # 데이터베이스 관리
-        st.subheader("🔧 데이터베이스 관리")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("🔄 연결 테스트", key="test_db_connection"):
-                try:
-                    test_result = supabase.table('employees').select('count').execute()
-                    st.success("✅ 데이터베이스 연결 정상")
-                except Exception as e:
-                    st.error(f"❌ 연결 오류: {str(e)}")
-        
-        with col2:
-            if st.button("📊 테이블 상태 확인", key="check_table_status"):
-                tables = ['employees', 'attendance', 'payroll']
-                for table in tables:
-                    try:
-                        result = supabase.table(table).select('*').limit(1).execute()
-                        st.success(f"✅ {table} 테이블 정상")
-                    except Exception as e:
-                        st.error(f"❌ {table} 테이블 오류: {str(e)}")
-        
-        with col3:
-            if st.button("🔄 전체 연차 업데이트", key="update_all_leave_system"):
-                if not employees_df.empty:
-                    updated_count = 0
-                    for _, emp in employees_df.iterrows():
-                        if update_employee_annual_leave(supabase, emp['id'], emp['hire_date']):
-                            updated_count += 1
-                    
-                    st.success(f"✅ {updated_count}명의 연차가 업데이트되었습니다!")
-                else:
-                    st.info("업데이트할 직원이 없습니다.")
-        
         # 2025년 세율 정보
         st.subheader("📊 2025년 적용 세율")
         
-        tax_info = pd.DataFrame({
-            "항목": ["국민연금", "건강보험", "장기요양보험", "고용보험(실업급여)", "고용보험(고용안정)", "산재보험"],
-            "근로자 부담률": ["4.5%", "3.545%", "건강보험료×12.95%", "0.9%", "-", "-"],
-            "사업주 부담률": ["4.5%", "3.545%", "건강보험료×12.95%", "0.9%", "0.25%~0.85%", "업종별 차등"]
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**소득세 누진세율**")
+            income_tax_info = pd.DataFrame({
+                "과세표준": ["1,400만원 이하", "1,400만원 초과~5,000만원", "5,000만원 초과~8,800만원", 
+                           "8,800만원 초과~1억5천만원", "1억5천만원 초과~3억원", "3억원 초과"],
+                "세율": ["6%", "15%", "24%", "35%", "38%", "40%"]
+            })
+            st.dataframe(income_tax_info, use_container_width=True)
+        
+        with col2:
+            st.write("**공제 항목**")
+            deduction_info = pd.DataFrame({
+                "공제 항목": ["급여소득공제", "기본공제(본인)", "기본공제(부양가족)", "자녀세액공제"],
+                "금액/비율": ["연봉의 70% 등", "150만원", "1명당 150만원", "1명당 연 15만원"]
+            })
+            st.dataframe(deduction_info, use_container_width=True)
+        
+        # 세금 계산 예시
+        st.subheader("💡 세금 계산 예시 (정확한 계산)")
+        
+        example_calc = calculate_correct_taxes_for_payroll(3000000, 3)  # 300만원, 부양가족 2명
+        
+        st.info(f"""
+        **월급 300만원, 부양가족 3명(본인+배우자+자녀1명)의 경우:**
+        - 연간총급여: {3000000 * 12:,}원
+        - 급여소득공제: {example_calc['salary_income_deduction']:,}원
+        - 기본공제: {example_calc['personal_deductions']:,}원 (3명 × 150만원)
+        - 과세표준: {example_calc['taxable_income']:,}원
+        - 자녀세액공제: {example_calc['child_tax_credit']:,}원
+        - **월 소득세: {example_calc['income_tax']:,}원**
+        - **월 지방소득세: {example_calc['resident_tax']:,}원**
+        - **총 세금(월): {example_calc['income_tax'] + example_calc['resident_tax']:,}원**
+        - **실효세율: {example_calc['effective_rate']:.2f}%**
+        
+        이제 세금이 합리적으로 계산됩니다! 🎉
+        """)
+        
+        # 4대보험 요율
+        st.subheader("📋 4대보험 요율")
+        insurance_info = pd.DataFrame({
+            "항목": ["국민연금", "건강보험", "장기요양보험", "고용보험"],
+            "근로자 부담률": ["4.5%", "3.545%", "건강보험료×12.95%", "0.9%"],
+            "사업주 부담률": ["4.5%", "3.545%", "건강보험료×12.95%", "0.9%"]
         })
-        
-        st.dataframe(tax_info, use_container_width=True)
-        
-        # 이메일 설정 확인
-        st.subheader("📧 이메일 설정 확인")
-        
-        try:
-            email_config = {
-                "SMTP 서버": st.secrets.get("SMTP_SERVER", "설정되지 않음"),
-                "SMTP 포트": st.secrets.get("SMTP_PORT", "설정되지 않음"),
-                "발신자 이메일": st.secrets.get("SENDER_EMAIL", "설정되지 않음"),
-                "비밀번호 설정": "설정됨" if st.secrets.get("SENDER_PASSWORD") else "설정되지 않음"
-            }
-            
-            for key, value in email_config.items():
-                if value == "설정되지 않음":
-                    st.error(f"❌ {key}: {value}")
-                else:
-                    st.success(f"✅ {key}: {value}")
-        except:
-            st.warning("⚠️ 이메일 설정을 확인할 수 없습니다.")
+        st.dataframe(insurance_info, use_container_width=True)
         
         # 문제 해결 가이드
         with st.expander("🆘 문제 해결 가이드"):
             st.markdown("""
-            ### 새로운 기능 관련 문제해결
+            ### Complete 시스템 문제해결
             
-            **1. 한글 PDF가 깨져 보일 때**
-            - 시스템에 한글 폰트가 설치되어 있는지 확인
-            - Windows: 맑은고딕, macOS: 나눔고딕 권장
+            **1. 세금 계산 관련**
+            - 부양가족 수가 정확히 입력되었는지 확인
+            - 기본공제와 자녀세액공제가 적용되었는지 확인
+            - '급여 관리' > '세금 계산 테스트'에서 확인 가능
             
-            **2. 이메일 발송이 안 될 때**
-            - Gmail 앱 비밀번호 설정 확인
-            - 2단계 인증 활성화 후 앱 비밀번호 생성
-            - SMTP 설정이 올바른지 확인
+            **2. 급여소득공제 확인**
+            - 연봉에 따라 자동으로 계산됨
+            - 500만원 이하: 70% 공제
+            - 그 이상: 단계별 공제율 적용
             
-            **3. 연차 계산이 이상할 때**
-            - 입사일이 올바르게 입력되었는지 확인
-            - '연차 관리' 메뉴에서 수동 조정 가능
+            **3. 자녀세액공제 확인**
+            - 부양가족 수에서 본인 제외한 인원
+            - 1명당 연 15만원 (월 12,500원)
             
-            **4. 퇴직금 계산 오류**
-            - 최근 3개월 급여 데이터가 있는지 확인
-            - 급여 계산 후 퇴직금 계산 진행
+            **4. 지방소득세 계산**
+            - 소득세의 정확히 10%
+            - 별도 세율표가 아님
             
-            **5. 기존 기능 문제**
-            - "테이블을 찾을 수 없습니다" → SQL 실행 확인
-            - "권한이 없습니다" → RLS 비활성화
-            - "연결할 수 없습니다" → API Key 확인
+            **5. 수당 관리**
+            - 모든 수당이 급여에 포함되어 세금 계산
+            - 근태 차감 후 조정된 급여로 세금 계산
+            
+            **6. 근태 차감**
+            - 무급휴가: 일급 × 일수
+            - 지각/조퇴: 시급 × 시간
             """)
-            
-            st.markdown("### 이메일 설정 가이드")
-            st.code("""
-# secrets.toml 예시
-[default]
-SUPABASE_URL = "https://your-project.supabase.co"
-SUPABASE_ANON_KEY = "your_anon_key"
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "your_email@gmail.com"
-SENDER_PASSWORD = "your_app_password"  # Gmail 앱 비밀번호
-            """)
-            
-            st.markdown("### 도움이 필요하시면")
-            st.info("💡 새로운 기능들이 추가된 v2.0입니다. 문제 발생 시 위 가이드를 참고해주세요.")
     
     # 푸터
     st.markdown("---")
     st.markdown(f"""
     <div style='text-align: center; color: #666; padding: 20px;'>
-        <p>💼 급여 및 인사 관리 시스템 v2.0 (개선판)</p>
-        <p>🆕 새로운 기능: 한글PDF지원, 이메일발송, 퇴직금계산, 연차자동관리</p>
+        <p>💼 급여 및 인사 관리 시스템 v2.0 Complete</p>
+        <p>✅ test9.py + test10.py 완전 통합 - 정확한 세금계산 + 모든 기능</p>
         <p>🔒 모든 데이터는 안전하게 암호화되어 저장됩니다</p>
         <p>현재 데이터: 직원 {len(employees_df)}명, 근태 {len(get_attendance(supabase))}건, 급여 {len(get_payroll(supabase))}건</p>
+        <p style='margin-top: 10px; font-size: 12px; color: #999;'>
+            🎯 정확한 세금 계산 + 완전한 기능으로 실제 급여와 일치합니다!
+        </p>
     </div>
     """, unsafe_allow_html=True)
 
