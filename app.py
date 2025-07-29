@@ -28,7 +28,7 @@ from dateutil.relativedelta import relativedelta
 
 # 페이지 설정
 st.set_page_config(
-    page_title="급여 및 인사 관리 시스템 v2.0 Complete",
+    page_title="급여 및 인사 관리 시스템",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1056,8 +1056,8 @@ def test_tax_calculation_comparison():
 # ============================================
 
 def main():
-    st.title("💼 급여 및 인사 관리 시스템 v2.0 Complete")
-    st.markdown("✅ **정확한 2025년 세금계산 + 완전한 수당관리 + 근태기반 차감 + 모든 기능 통합**")
+    st.title("💼 급여 및 인사 관리 시스템")
+    st.markdown("✅ **새내기 사장님들을 위한 간편한 인사관리 및 급여처리 시스템입니다.**")
     
     # Supabase 초기화
     supabase = init_supabase()
